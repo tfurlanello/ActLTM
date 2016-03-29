@@ -1,0 +1,6 @@
+function net = iLab_simplenn_addlayer_dropout(net, name, rate)
+
+  net.layers{end+1} = struct('type', 'dropout', ...
+                             'name', name, ...
+                             'rate', rate) ;
+end

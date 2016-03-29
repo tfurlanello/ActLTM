@@ -1,0 +1,70 @@
+function net = iLab_simplenn_alexnet(varargin)
+% --------------------------------------------------------------------
+% alexnet
+   
+    opts.scale = 1 ;
+    opts.initBias = 0.1 ;
+    opts.weightDecay = 1 ;
+    %opts.weightInitMethod = 'xavierimproved' ;
+    opts.weightInitMethod = 'gaussian' ;
+    opts.model = 'alexnet' ;
+    opts.batchNormalization = false ;
+	opts.nclasses = 1000;
+    opts = vl_argparse(opts, varargin) ;
+     
+    net.normalization.imageSize     = [227, 227, 3] ;
+	net.normalization.border        = 256 - net.normalization.imageSize(1:2) ;
+    net.normalization.interpolation = 'bicubic' ;
+    net.normalization.averageImage  = [] ;
+    net.normalization.keepAspect    = true ;  
+    
+    net.layers = {} ;
+
+    net = iLab_simplenn_addblock(net, opts, '1', 11, 11, 3, 96, 4, 0) ;
+    net = iLab_simplenn_addnorm(net, opts, '1') ;
+    net.layers{end+1} = struct('type', 'pool', 'name', 'pool1', ...
+                               'method', 'max', ...
+                               'pool', [3 3], ...
+                               'stride', 2, ...
+                               'pad', 0) ;
+
+
+    net = iLab_simplenn_addblock(net, opts, '2', 5, 5, 48, 256, 1, 2) ;
+    net = iLab_simplenn_addnorm(net, opts, '2') ;
+    net.layers{end+1} = struct('type', 'pool', 'name', 'pool2', ...
+                               'method', 'max', ...
+                               'pool', [3 3], ...
+                               'stride', 2, ...
+                               'pad', 0) ;
+
+
+    net = iLab_simplenn_addblock(net, opts, '3', 3, 3, 256, 384, 1, 1) ;
+    net = iLab_simplenn_addblock(net, opts, '4', 3, 3, 192, 384, 1, 1) ;
+    net = iLab_simplenn_addblock(net, opts, '5', 3, 3, 192, 256, 1, 1) ;
+    net.layers{end+1} = struct('type', 'pool', 'name', 'pool5', ...
+                               'method', 'max', ...
+                               'pool', [3 3], ...
+                               'stride', 2, ...
+                               'pad', 0) ;
+
+    net = iLab_simplenn_addblock(net, opts, '6', 6, 6, 256, 1024, 1, 0) ;
+    net = iLab_simplenn_addDropout(net, opts, '6') ;
+
+    net = iLab_simplenn_addblock(net, opts, '7', 1, 1, 1024, 1024, 1, 0) ;
+    net = iLab_simplenn_addDropout(net, opts, '7') ;
+
+    net = iLab_simplenn_addblock(net, opts, '8_1', 1, 1, 1024, opts.nclasses, 1, 0) ;
+    net.layers(end) = [] ;
+    if opts.batchNormalization, net.layers(end) = [] ; end
+
+    % final touches
+    switch lower(opts.weightInitMethod)
+      case {'xavier', 'xavierimproved'}
+        net.layers{end}.weights{1} = net.layers{end}.weights{1} / 10 ;
+    end
+    net.layers{end+1} = struct('type', 'softmaxloss', 'name', 'loss') ;
+
+  
+    
+
+end

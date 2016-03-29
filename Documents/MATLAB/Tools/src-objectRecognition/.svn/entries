@@ -1,0 +1,46 @@
+10
+
+dir
+7776
+svn://isvn.usc.edu/work/ilab-work/trunk/jiaping/projects/iLab-object-recognition/src
+svn://isvn.usc.edu/work/ilab-work
+
+
+
+2016-01-31T22:11:11.715098Z
+7774
+jiaping
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+afe553af-c437-0410-afe2-b434e8eeecac
+
+cudnn-v3.0
+dir
+
+Felzenszwalb-Segmentation-matlab
+dir
+
+Felzenszwalb-Segmentation
+dir
+
+main
+dir
+
+PolygonClipper
+dir
+
+matconvnet-1.0-beta14
+dir
+

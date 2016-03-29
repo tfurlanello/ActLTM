@@ -1,0 +1,231 @@
+function [labels, imdb] = iLab_dagnn_predictBatch(net, imdb, subset, ...
+                                                    getBatch, opts_runTest, ...
+                                                    whichLayersToEval, saveOpt)
+
+% this function is specifically designed for prediction of two label layers            
+% -------------------------------------------------------------------------
+    %{
+    opts.batchSize      =   128 ;
+    opts.numSubBatches  =   1 ;
+    opts.gpus           =   1 ; % which GPU devices to use (none, one, or more)
+    opts.conserveMemory =   false ;
+    opts.sync           =   false ;
+    opts.prefetch       =   false ;
+    opts.cudnn          =   true ;
+
+    opts = vl_argparse(opts, opts_in) ; 
+    %}
+
+    opts = iLab_nn_validateRunTestParam(opts_runTest);
+    opts.numSubBatches = 1; %% much sure to fix this to be 1
+
+    numGpus = numel(opts.gpus) ;
+    if numGpus >= 1
+      net.move('gpu') ;
+    end
+    
+    if ~exist('whichLayersToEval', 'var') || isempty(whichLayersToEval)
+        whichLayersToEval = {};
+
+    end
+    if ~exist('saveOpt', 'var') || isempty(saveOpt)
+        saveOpt = 'max';
+    end
+%XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+%                           read out: input & prediction variables from net 
+%XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    predictionsNames    =   net.predictionsNames;
+    %% modified  for iLab20M dataset
+     predictionsNames    =   predictionsNames(1); 
+
+    inputsNames  =  net.inputsNames;
+    outputsNames =  net.outputsNames;
+
+%     assert(numel(outputsNames) == numel(predictionsNames));
+%     assert(numel(inputsNames) == (1+numel(outputsNames)));
+
+    if numel(predictionsNames) > 2
+        error('Now, we only support architectures with at most 2 predictions\n');
+    end
+
+%XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+%                                                       do batch prediction
+%XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX 
+	labelgraphs = struct('isstructured', {}, ...
+                        'labelgraph',   {});     
+    for o=1:numel(outputsNames)            
+        nLayers = numel(net.layers);
+        lossFunctions = {};
+        for i=1:nLayers
+            if ismember(outputsNames{o}, net.layers(i).outputs)
+                lossFunctions = cat(1, lossFunctions, net.layers(i).block.loss);
+            end
+        end
+
+        if ismember('softmaxlog', lossFunctions) || ismember('classerror', lossFunctions)
+            isstructured = false;
+            labelInteraction = [];
+        end
+        if ismember('crossentropy', lossFunctions) ...
+                    || ismember('classerror-crossentropy', lossFunctions)
+            isstructured = true;
+
+            for l=1:nLayers
+                if ismember(outputsNames{o}, net.layers(i).outputs) && ...
+                    strcmp(net.layers(i).block.loss, 'crossentropy')
+                        labelgraphName = net.layers(i).params{2};
+                    labelInteraction = net.params(net.getParamIndex(labelgraphName)).value;
+                    break;
+                end
+            end    
+            if ~exist('labelInteraction', 'var')
+                error('please check the input parameters\n');
+            end    
+        end             
+%         labelgraphs(o).isstructured = isstructured;
+%         labelgraphs(o).labelgraph   = labelInteraction;
+
+    end
+    
+    if isempty(labelgraphs)
+        for p=1:numel(predictionsNames)
+            labelgraphs(p).isstructured = false;
+            labelgraphs(p).labelgraph   = [];
+        end
+    end
+    
+
+    % parameters related to intermediate layers
+    if ischar(whichLayersToEval)
+        whichLayersToEval = {whichLayersToEval};
+    end
+    nLayersEval = numel(whichLayersToEval);    
+    intermediateLayerValues = struct('name', {}, 'type', {}, 'value', {});
+    for l=1:nLayersEval
+        intermediateLayerValues(l).name = whichLayersToEval{l};
+        intermediateLayerValues(l).value = [];
+        intermediateLayerValues(l).type = saveOpt;
+    end
+    
+    nPreds = numel(predictionsNames);
+    num = 0 ;     
+    labels = struct('groundtruth', {},...
+                    'prediction',  {}, ...
+                    'probability', {});
+    
+    for p=1:nPreds
+        labels(p).groundtruth = [];
+        labels(p).prediction  = [];   
+        labels(p).probability = [];
+    end
+
+     for t=1:opts.batchSize:numel(subset)
+        fprintf('batch %3d/%3d: \n',  ...
+            fix(t/opts.batchSize)+1, ceil(numel(subset)/opts.batchSize)) ;
+          for s=1:opts.numSubBatches
+            % get this image batch and prefetch the next
+            batchStart = t + (labindex-1) + (s-1) * numlabs ;
+            batchEnd = min(t+opts.batchSize-1, numel(subset)) ;
+            batch = subset(batchStart : opts.numSubBatches * numlabs : batchEnd) ;
+            num = num + numel(batch) ;
+            if numel(batch) == 0, continue ; end
+
+            inputs = getBatch(imdb, batch) ;
+
+            if opts.prefetch
+              if s == opts.numSubBatches
+                batchStart = t + (labindex-1) + opts.batchSize ;
+                batchEnd = min(t+2*opts.batchSize-1, numel(subset)) ;
+              else
+                batchStart = batchStart + numlabs ;
+              end
+              nextBatch = subset(batchStart : opts.numSubBatches * numlabs : batchEnd) ;
+              getBatch(imdb, nextBatch) ;
+            end
+              net.eval(inputs) ;
+          end
+          
+        inputs = iLab_arg2struct(inputs); 
+       %% structured or un-structured prediction   
+        for p=1:nPreds
+            predname = predictionsNames{p};
+            labelgraph = labelgraphs(p);
+            predictionValues = net.vars(net.getVarIndex(predname)).value ;
+            [pred_label, probs] = iLab_dagnn_predictions2labels_gpu(predictionValues, 5, ...
+                                                           labelgraph);
+            pred_label = gather(pred_label);
+            pred_label = pred_label';
+            
+            probs  = gather(probs);
+            probs  = probs';            
+
+%             if numel(inputsNames) == (nPreds+1)
+%                 gt = inputs.(inputsNames{p+1});    
+%                 labels(p).groundtruth  = cat(1,labels(p).groundtruth, gt(:));
+%             end
+            
+            if numel(fieldnames(inputs)) == 4
+                gt = inputs.(inputsNames{3});
+                labels(p).groundtruth  = cat(1,labels(p).groundtruth, gt(:));
+            elseif numel(fieldnames(inputs)) == 2
+                gt = inputs.(inputsNames{2});
+                labels(p).groundtruth  = cat(1,labels(p).groundtruth, gt(:));
+            end
+                
+
+
+            labels(p).prediction   =  cat(1, labels(p).prediction, pred_label);   
+            labels(p).probability  =  cat(1, labels(p).probability, probs);   
+            
+        end
+                
+       %% store the values of intermediate layers
+        for l=1:nLayersEval
+            intermediateLayerName = whichLayersToEval{l};            
+            value = net.vars(net.getVarIndex(intermediateLayerName)).value ;
+            value = gather(value);
+            
+            switch saveOpt
+                case 'sum'
+                    value = reshape(sum(sum(value,1),2), [size(value,3) size(value,4)]);            
+                    intermediateLayerValues(l).value = cat(2, intermediateLayerValues(l).value, ...
+                                                                value);
+                case 'max'
+                    value = reshape(max(max(value,[],1),[],2), [size(value,3) size(value,4)]);            
+                    intermediateLayerValues(l).value = cat(2, intermediateLayerValues(l).value, ...
+                                                                value);                
+                % it's risky to use this option, since VERY much space consuming    
+                case 'raw'
+                    intermediateLayerValues(l).value = cat(4, intermediateLayerValues(l).value, ...
+                                                                value); 
+                    
+                otherwise
+                    error('only support 3 types of save options\n');
+            end
+        end
+       
+     end
+     
+     predLabels = zeros(numel(labels), numel(subset), 5);
+     gtLabels = zeros(numel(labels), numel(subset));
+     for i=1:numel(labels)
+         predLabels(i,:,:) = labels(i).prediction;
+         if ~isempty(labels(i).groundtruth)
+            gtLabels(i,:)   = labels(i).groundtruth;
+         end
+     end
+     
+     imdb.eval = struct('subset', {}, ...
+                        'gt',     {}, ...
+                        'pred',   {}, ...
+                        'intermediateLayers', {});
+                    
+     imdb.eval(1).gt                 =   gtLabels;
+     imdb.eval(1).pred               =   predLabels;
+     imdb.eval(1).subset             =   subset;
+     imdb.eval(1).intermediateLayers =   intermediateLayerValues;
+          
+    net.reset() ;
+    net.move('cpu') ;
+
+end
